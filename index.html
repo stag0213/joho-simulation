@@ -1,0 +1,209 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <title>待ち行列シミュレーション（情報Ⅰ）</title>
+  <style>
+    body { font-family: system-ui, sans-serif; margin: 20px; }
+    h1 { font-size: 1.6rem; }
+    .panel { border: 1px solid #ccc; border-radius: 8px; padding: 16px; margin-bottom: 20px; }
+    .flex { display: flex; gap: 16px; align-items: flex-start; }
+    .subpanel { flex: 1; }
+    label { margin-right: 12px; }
+    button { padding: 6px 14px; margin-right: 8px; }
+    canvas { border: 1px solid #999; background: #fafafa; display: block; margin-top: 10px; }
+    table { border-collapse: collapse; margin-top: 10px; width: 100%; }
+    th, td { border: 1px solid #999; padding: 4px 6px; text-align: center; font-size: 0.85rem; }
+    .stats { margin-top: 10px; }
+    .waiting { background: #eef; }
+    .serving { background: #fee; font-weight: bold; }
+    .done { background: #efe; }
+  </style>
+</head>
+<body>
+<h1>高等学校 情報Ⅰ：待ち行列シミュレーション</h1>
+
+<div class="panel">
+  <h2>設定</h2>
+  <label>シミュレーション時間（分）
+    <input type="number" id="simTime" value="60" min="1">
+  </label>
+  <label>平均到着間隔（分）
+    <select id="arrivalMode">
+      <option value="random" selected>乱数</option>
+      <option value="fixed">固定</option>
+    </select>
+    <input type="number" id="arrival" value="3" min="1">
+  </label><br>
+  <label>平均サービス時間（分）
+    <select id="serviceMode">
+      <option value="random" selected>乱数</option>
+      <option value="fixed">固定</option>
+    </select>
+    <input type="number" id="service" value="4" min="1">
+  </label><br>
+  <button onclick="startSim()">開始</button>
+  <button onclick="pauseSim()">一時停止</button>
+  <button onclick="resumeSim()">再開</button>
+  <button onclick="stepOnce()">1分進める</button>
+</div>
+
+<div class="panel">
+  <h2>可視化と待ち人数の時間変化</h2>
+  <div class="flex">
+    <div class="subpanel">
+      <h3>可視化（各客の様子）</h3>
+      <canvas id="queueCanvas" width="600" height="160"></canvas>
+      <div class="stats" id="stats"></div>
+    </div>
+    <div class="subpanel">
+      <h3>待ち人数の時間変化</h3>
+      <canvas id="graphCanvas" width="600" height="200"></canvas>
+    </div>
+  </div>
+</div>
+
+<div class="panel">
+  <h2>各客のデータ（リアルタイム）</h2>
+  <table id="customerTable"></table>
+</div>
+
+<div class="panel">
+  <h2>ガントチャート（待機：青 / サービス：赤）</h2>
+  <canvas id="ganttCanvas" width="900" height="300"></canvas>
+</div>
+
+<script>
+let timer=null,running=false,paused=false;
+let time,simTime,arrivalMean,serviceMean,arrivalMode,serviceMode;
+let nextArrival,serviceEnd;
+let queue,serverBusy,customers,currentCustomer;
+let queueHistory,maxQueue,sumQueue;
+let ctx,gCtx,ganttCtx;
+
+function startSim(){
+  clearInterval(timer); running=true; paused=false;
+  simTime = +document.getElementById('simTime').value;
+  arrivalMean = +document.getElementById('arrival').value;
+  serviceMean = +document.getElementById('service').value;
+  arrivalMode = document.getElementById('arrivalMode').value;
+  serviceMode = document.getElementById('serviceMode').value;
+
+  time=0;
+  const first={id:1,arrivalTime:0,startTime:0,serviceTime:serviceMode==='random'?randExp(serviceMean):serviceMean,endTime:null,waitTime:0,state:'serving'};
+  nextArrival=arrivalMode==='random'?randExp(arrivalMean):arrivalMean;
+  serviceEnd=first.serviceTime;
+  queue=[]; serverBusy=true; customers=[first]; currentCustomer=first;
+  queueHistory=[]; maxQueue=0; sumQueue=0;
+  ctx=queueCanvas.getContext('2d');
+  gCtx=graphCanvas.getContext('2d');
+  ganttCtx=ganttCanvas.getContext('2d');
+  timer=setInterval(step,200);
+}
+
+function step(){
+  if(!running||paused) return;
+
+  time++;
+
+  if(serverBusy && time>=serviceEnd){
+    currentCustomer.endTime = serviceEnd;
+    currentCustomer.state = 'done';
+    serverBusy = false;
+    currentCustomer = null;
+  }
+
+  if(time>=nextArrival && time<=simTime){
+    const c={id:customers.length+1,arrivalTime:time,startTime:null,serviceTime:null,endTime:null,waitTime:null,state:'waiting'};
+    customers.push(c);
+    queue.push(c);
+    nextArrival += arrivalMode==='random'?randExp(arrivalMean):arrivalMean;
+  }
+
+  if(!serverBusy && queue.length){
+    currentCustomer = queue.shift();
+    currentCustomer.startTime = time;
+    currentCustomer.serviceTime = serviceMode==='random'?randExp(serviceMean):serviceMean;
+    currentCustomer.waitTime = time - currentCustomer.arrivalTime;
+    currentCustomer.state = 'serving';
+    serviceEnd = time + currentCustomer.serviceTime;
+    serverBusy = true;
+  }
+
+  queueHistory.push(queue.length);
+  maxQueue = Math.max(maxQueue, queue.length);
+  sumQueue += queue.length;
+
+  drawQueue(); drawGraph(); drawGantt(); updateTable();
+  stats.textContent = `時刻:${time}分 待ち:${queue.length} 最大:${maxQueue} 平均:${(sumQueue/queueHistory.length).toFixed(2)}`;
+
+  if(time>=simTime){ clearInterval(timer); running=false; }
+}
+
+function stepOnce(){ if(!running) return; paused=false; step(); paused=true; }
+function pauseSim(){paused=true;} 
+function resumeSim(){paused=false;}
+function randExp(m){return Math.max(1,Math.round(-m*Math.log(1-Math.random())));} 
+
+function drawQueue(){
+  ctx.clearRect(0,0,600,160);
+  ctx.strokeRect(500,50,80,40); ctx.fillText('窓口',520,75);
+  queue.forEach((c,i)=>{ctx.fillStyle='#88f';ctx.fillRect(20+i*25,60,18,18);ctx.fillText(c.id,22+i*25,92);});
+  if(currentCustomer){ctx.fillStyle='#f88';ctx.fillRect(525,55,18,18);ctx.fillText(currentCustomer.id,527,87);}  
+}
+
+function drawGraph(){
+  gCtx.clearRect(0,0,600,200);
+  gCtx.strokeRect(40,10,540,160);
+  const max=Math.max(...queueHistory,1);
+  gCtx.beginPath();
+  queueHistory.forEach((v,i)=>{
+    const x=40+i/(queueHistory.length-1||1)*540;
+    const y=170-v/max*160;
+    if(i===0) gCtx.moveTo(x,y); else gCtx.lineTo(x,y);
+  });
+  gCtx.stroke();
+}
+
+function updateTable(){
+  let h='<tr><th>客</th><th>状態</th><th>到着</th><th>開始</th><th>終了</th><th>待ち</th></tr>';
+  customers.forEach(c=>{
+    const stateJP = c.state==='waiting' ? '待ち' : c.state==='serving' ? 'サービス中' : '完了';
+    h += `<tr class="${c.state}">`+
+         `<td>${c.id}</td>`+
+         `<td>${stateJP}</td>`+
+         `<td>${c.arrivalTime}</td>`+
+         `<td>${c.startTime ?? '-'}</td>`+
+         `<td>${c.endTime ?? '-'}</td>`+
+         `<td>${c.waitTime ?? '-'}</td>`+
+         `</tr>`;
+  });
+  customerTable.innerHTML=h;
+}
+
+function drawGantt(){
+  ganttCtx.clearRect(0,0,900,300);
+  const left=60, top=20, rowH=24, width=800;
+  customers.forEach((c,i)=>{
+    const y=top+i*rowH;
+    ganttCtx.fillStyle='#000';
+    ganttCtx.fillText('客'+c.id,5,y+15);
+
+    if(c.arrivalTime!=null){
+      const ws=left+c.arrivalTime/simTime*width;
+      const we=(c.startTime!=null?c.startTime:time)/simTime*width+left;
+      ganttCtx.fillStyle='#88f';
+      ganttCtx.fillRect(ws,y,we-ws,14);
+    }
+
+    if(c.startTime!=null){
+      const ss=left+c.startTime/simTime*width;
+      const se=(c.endTime!=null?c.endTime:time)/simTime*width+left;
+      ganttCtx.fillStyle='#f88';
+      ganttCtx.fillRect(ss,y,se-ss,14);
+    }
+  });
+}
+</script>
+</body>
+</html>
